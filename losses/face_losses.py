@@ -8,36 +8,35 @@ def make_logits(embedding, label, loss_type, class_num, s=64.0, m1=1.0, m2=0.5, 
     if loss_type == 'margin_softmax':
         embedding_norm = tf.norm(embedding, axis=-1, keepdims=True, name='fc1n')
         w_norm = tf.norm(w, axis=0, keepdims=True)
-        nembedding = embedding_norm * s
-        fc7 = mx.sym.FullyConnected(data=nembedding, weight=w_norm, no_bias=True, num_hidden=class_num,
-                                    name='fc7')
+        embedding_norm_scale = embedding_norm * s
+        fc7 = tf.matmul(embedding_norm_scale, w_norm, name='fc7')
         if m1 != 1.0 or m2 != 0.0 or m3 != 0.0:
             if m1 == 1.0 and m2 == 0.0:
                 s_m = s * m3
-                gt_one_hot = mx.sym.one_hot(label, depth=class_num, on_value=s_m, off_value=0.0)
-                fc7 = fc7 - gt_one_hot
+                label_one_hot = tf.one_hot(label, depth=class_num, on_value=s_m, off_value=0.0)
+                fc7 = fc7 - label_one_hot
             else:
-                zy = mx.sym.pick(fc7, label, axis=1)
+                zy = tf.gather(fc7, label, axis=-1)
                 cos_t = zy / s
-                t = mx.sym.arccos(cos_t)
+                t = tf.math.acos(cos_t)
                 if m1 != 1.0:
                     t = t * m1
                 if m2 > 0.0:
                     t = t + m2
-                body = mx.sym.cos(t)
+                body = tf.math.cos(t)
                 if m3 > 0.0:
                     body = body - m3
                 new_zy = body * s
                 diff = new_zy - zy
-                diff = mx.sym.expand_dims(diff, 1)
-                gt_one_hot = mx.sym.one_hot(label, depth=class_num, on_value=1.0, off_value=0.0)
-                body = mx.sym.broadcast_mul(gt_one_hot, diff)
+                diff = tf.expand_dims(diff)
+                label_one_hot = tf.one_hot(label, depth=class_num, on_value=1.0, off_value=0.0)
+                body = tf.multiply(label_one_hot, diff)
                 fc7 = fc7 + body
     else:
-        fc7 = tf.matmul(embedding, weights)
+        fc7 = tf.matmul(embedding, w)
         if use_bias:
             bias = tf.Variable(tf.zeros([class_num, ]), name='fc7_bias')
-            fc7 = fc7 + bias
+            fc7 = tf.add(fc7, bias)
     return fc7
 
 
