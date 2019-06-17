@@ -2,6 +2,45 @@ import tensorflow as tf
 import math
 
 
+def make_logits(embedding, label, loss_type, class_num, s=64.0, m1=1.0, m2=0.5, m3=0.0, use_bias=False):
+    embedding_size = embedding.get_shape().as_list()[-1]
+    w = tf.Variable(tf.random_normal([embedding_size, class_num], stddev=0.01), name='fc7_weight')
+    if loss_type == 'margin_softmax':
+        embedding_norm = tf.norm(embedding, axis=-1, keepdims=True, name='fc1n')
+        w_norm = tf.norm(w, axis=0, keepdims=True)
+        nembedding = embedding_norm * s
+        fc7 = mx.sym.FullyConnected(data=nembedding, weight=w_norm, no_bias=True, num_hidden=class_num,
+                                    name='fc7')
+        if m1 != 1.0 or m2 != 0.0 or m3 != 0.0:
+            if m1 == 1.0 and m2 == 0.0:
+                s_m = s * m3
+                gt_one_hot = mx.sym.one_hot(label, depth=class_num, on_value=s_m, off_value=0.0)
+                fc7 = fc7 - gt_one_hot
+            else:
+                zy = mx.sym.pick(fc7, label, axis=1)
+                cos_t = zy / s
+                t = mx.sym.arccos(cos_t)
+                if m1 != 1.0:
+                    t = t * m1
+                if m2 > 0.0:
+                    t = t + m2
+                body = mx.sym.cos(t)
+                if m3 > 0.0:
+                    body = body - m3
+                new_zy = body * s
+                diff = new_zy - zy
+                diff = mx.sym.expand_dims(diff, 1)
+                gt_one_hot = mx.sym.one_hot(label, depth=class_num, on_value=1.0, off_value=0.0)
+                body = mx.sym.broadcast_mul(gt_one_hot, diff)
+                fc7 = fc7 + body
+    else:
+        fc7 = tf.matmul(embedding, weights)
+        if use_bias:
+            bias = tf.Variable(tf.zeros([class_num, ]), name='fc7_bias')
+            fc7 = fc7 + bias
+    return fc7
+
+
 def arcface_loss(embedding, labels, out_num, w_init=None, s=64., m=0.5):
     '''
     :param embedding: the input embedding vectors
