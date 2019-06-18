@@ -1,10 +1,10 @@
 import tensorflow as tf
 import argparse
-from config import config as cfg
+from config import config, default
 from data.mx2tfrecords import parse_function
 import os
 from nets.L_Resnet_E_IR_fix_issue9 import get_resnet
-from losses.face_losses import arcface_loss
+from losses.face_losses import make_logits
 from tensorflow.core.protobuf import config_pb2
 import time
 from data.eval_data_reader import load_bin
@@ -43,42 +43,7 @@ def parse_args():
 def get_symbol(args):
     embedding = eval(config.net_name).get_symbol()
     gt_label = mx.symbol.Variable('softmax_label')
-    if cfg.loss_name == 'softmax':
-        _weight = mx.symbol.Variable("fc7_weight", shape=(config.num_classes, config.emb_size), lr_mult=config.fc7_lr_mult, wd_mult=config.fc7_wd_mult, init=mx.init.Normal(0.01))
-        if config.fc7_no_bias:
-            fc7 = mx.sym.FullyConnected(data=embedding, weight = _weight, no_bias = True, num_hidden=config.num_classes, name='fc7')
-        else:
-            _bias = mx.symbol.Variable('fc7_bias', lr_mult=2.0, wd_mult=0.0)
-            fc7 = mx.sym.FullyConnected(data=embedding, weight = _weight, bias = _bias, num_hidden=config.num_classes, name='fc7')
-    elif config.loss_name=='margin_softmax':
-        _weight = mx.symbol.Variable("fc7_weight", shape=(config.num_classes, config.emb_size),
-            lr_mult=config.fc7_lr_mult, wd_mult=config.fc7_wd_mult, init=mx.init.Normal(0.01))
-        s = config.loss_s
-        _weight = mx.symbol.L2Normalization(_weight, mode='instance')
-        nembedding = mx.symbol.L2Normalization(embedding, mode='instance', name='fc1n')*s
-        fc7 = mx.sym.FullyConnected(data=nembedding, weight = _weight, no_bias = True, num_hidden=config.num_classes, name='fc7')
-        if config.loss_m1!=1.0 or config.loss_m2!=0.0 or config.loss_m3!=0.0:
-            if config.loss_m1==1.0 and config.loss_m2==0.0:
-                s_m = s*config.loss_m3
-                gt_one_hot = mx.sym.one_hot(gt_label, depth = config.num_classes, on_value = s_m, off_value = 0.0)
-                fc7 = fc7-gt_one_hot
-            else:
-                zy = mx.sym.pick(fc7, gt_label, axis=1)
-                cos_t = zy/s
-                t = mx.sym.arccos(cos_t)
-                if config.loss_m1!=1.0:
-                    t = t*config.loss_m1
-                if config.loss_m2>0.0:
-                    t = t+config.loss_m2
-                body = mx.sym.cos(t)
-                if config.loss_m3>0.0:
-                    body = body - config.loss_m3
-                new_zy = body*s
-                diff = new_zy - zy
-                diff = mx.sym.expand_dims(diff, 1)
-                gt_one_hot = mx.sym.one_hot(gt_label, depth = config.num_classes, on_value = 1.0, off_value = 0.0)
-                body = mx.sym.broadcast_mul(gt_one_hot, diff)
-                fc7 = fc7+body
+    fc7 = make_logits(embedding, gt_label, num)
     out_list = [mx.symbol.BlockGrad(embedding)]
     softmax = mx.symbol.SoftmaxOutput(data=fc7, label = gt_label, name='softmax', normalization='valid')
     out_list.append(softmax)
@@ -409,10 +374,10 @@ if __name__ == '__main__':
     pred = tf.nn.softmax(logit)
     acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(pred, axis=1), labels), dtype=tf.float32))
     # 3.10 define sess
-    config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=args.log_device_mapping)
-    config.gpu_options.allow_growth = True
+    tf_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=args.log_device_mapping)
+    tf_config.gpu_options.allow_growth = True
 
-    sess = tf.Session(config=config)
+    sess = tf.Session(config=tf_config)
     # 3.11 summary writer
     summary = tf.summary.FileWriter(args.summary_path, sess.graph)
     summaries = []

@@ -4,6 +4,7 @@ from easydict import EasyDict as edict
 
 config = edict()
 
+config.debug = False
 config.bn_mom = 0.9
 config.workspace = 256
 config.emb_size = 512
@@ -197,21 +198,21 @@ default.models_root = './models'
 
 def generate_config(_network, _dataset, _loss):
     for k, v in loss[_loss].items():
-      config[k] = v
-      if k in default:
-        default[k] = v
+        config[k] = v
+        if k in default:
+            default[k] = v
     for k, v in network[_network].items():
-      config[k] = v
-      if k in default:
-        default[k] = v
+        config[k] = v
+        if k in default:
+            default[k] = v
     for k, v in dataset[_dataset].items():
-      config[k] = v
-      if k in default:
-        default[k] = v
+        config[k] = v
+        if k in default:
+            default[k] = v
     config.loss = _loss
     config.network = _network
     config.dataset = _dataset
     config.num_workers = 1
     if 'DMLC_NUM_WORKER' in os.environ:
-      config.num_workers = int(os.environ['DMLC_NUM_WORKER'])
+        config.num_workers = int(os.environ['DMLC_NUM_WORKER'])
 
