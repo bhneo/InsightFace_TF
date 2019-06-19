@@ -78,9 +78,9 @@ def calculate_roc(thresholds, embeddings1, embeddings2, actual_issame, nrof_fold
         for threshold_idx, threshold in enumerate(thresholds):
             tprs[fold_idx, threshold_idx], fprs[fold_idx, threshold_idx], _ = calculate_accuracy(threshold,
                                                                                                  dist[test_set],
-                                                                                                 actual_issame[
-                                                                                                     test_set])
-        _, _, accuracy[fold_idx] = calculate_accuracy(thresholds[best_threshold_index], dist[test_set],
+                                                                                                 actual_issame[test_set])
+        _, _, accuracy[fold_idx] = calculate_accuracy(thresholds[best_threshold_index],
+                                                      dist[test_set],
                                                       actual_issame[test_set])
 
     tpr = np.mean(tprs, 0)
@@ -102,16 +102,6 @@ def calculate_accuracy(threshold, dist, actual_issame):
 
 
 def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_target, nrof_folds=10):
-    '''
-    Copy from [insightface](https://github.com/deepinsight/insightface)
-    :param thresholds:
-    :param embeddings1:
-    :param embeddings2:
-    :param actual_issame:
-    :param far_target:
-    :param nrof_folds:
-    :return:
-    '''
     assert (embeddings1.shape[0] == embeddings2.shape[0])
     assert (embeddings1.shape[1] == embeddings2.shape[1])
     nrof_pairs = min(len(actual_issame), embeddings1.shape[0])
@@ -126,7 +116,6 @@ def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_targe
     indices = np.arange(nrof_pairs)
 
     for fold_idx, (train_set, test_set) in enumerate(k_fold.split(indices)):
-
         # Find the threshold that gives FAR = far_target
         far_train = np.zeros(nrof_thresholds)
         for threshold_idx, threshold in enumerate(thresholds):
@@ -145,27 +134,27 @@ def calculate_val(thresholds, embeddings1, embeddings2, actual_issame, far_targe
     return val_mean, val_std, far_mean
 
 
-def calculate_val_far(threshold, dist, actual_issame):
-    predict_issame = np.less(dist, threshold)
-    true_accept = np.sum(np.logical_and(predict_issame, actual_issame))
-    false_accept = np.sum(np.logical_and(predict_issame, np.logical_not(actual_issame)))
-    n_same = np.sum(actual_issame)
-    n_diff = np.sum(np.logical_not(actual_issame))
+def calculate_val_far(threshold, dist, actual_is_same):
+    predict_is_same = np.less(dist, threshold)
+    true_accept = np.sum(np.logical_and(predict_is_same, actual_is_same))
+    false_accept = np.sum(np.logical_and(predict_is_same, np.logical_not(actual_is_same)))
+    n_same = np.sum(actual_is_same)
+    n_diff = np.sum(np.logical_not(actual_is_same))
     val = float(true_accept) / float(n_same)
     far = float(false_accept) / float(n_diff)
     return val, far
 
 
-def evaluate(embeddings, actual_issame, nrof_folds=10, pca=0):
+def evaluate(embeddings, actual_is_same, nrof_folds=10, pca=0):
     # Calculate evaluation metrics
     thresholds = np.arange(0, 4, 0.01)
     embeddings1 = embeddings[0::2]
     embeddings2 = embeddings[1::2]
     tpr, fpr, accuracy = calculate_roc(thresholds, embeddings1, embeddings2,
-                                       np.asarray(actual_issame), nrof_folds=nrof_folds, pca=pca)
+                                       np.asarray(actual_is_same), nrof_folds=nrof_folds, pca=pca)
     thresholds = np.arange(0, 4, 0.001)
     val, val_std, far = calculate_val(thresholds, embeddings1, embeddings2,
-                                      np.asarray(actual_issame), 1e-3, nrof_folds=nrof_folds)
+                                      np.asarray(actual_is_same), 1e-3, nrof_folds=nrof_folds)
     return tpr, fpr, accuracy, val, val_std, far
 
 
@@ -176,20 +165,9 @@ def data_iter(datasets, batch_size):
 
 
 def test(data_set, sess, embedding_tensor, batch_size, label_shape=None, feed_dict=None, input_placeholder=None):
-    '''
-    referenc official implementation [insightface](https://github.com/deepinsight/insightface)
-    :param data_set:
-    :param sess:
-    :param embedding_tensor:
-    :param batch_size:
-    :param label_shape:
-    :param feed_dict:
-    :param input_placeholder:
-    :return:
-    '''
     print('testing verification..')
     data_list = data_set[0]
-    issame_list = data_set[1]
+    is_same_list = data_set[1]
     embeddings_list = []
     time_consumed = 0.0
     for i in range(len(data_list)):
@@ -233,7 +211,7 @@ def test(data_set, sess, embedding_tensor, batch_size, label_shape=None, feed_di
     embeddings = sklearn.preprocessing.normalize(embeddings)
     print(embeddings.shape)
     print('infer time', time_consumed)
-    _, _, accuracy, val, val_std, far = evaluate(embeddings, issame_list, nrof_folds=10)
+    _, _, accuracy, val, val_std, far = evaluate(embeddings, is_same_list, nrof_folds=10)
     acc2, std2 = np.mean(accuracy), np.std(accuracy)
     return acc1, std1, acc2, std2, _xnorm, embeddings_list
 
