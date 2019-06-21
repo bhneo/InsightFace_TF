@@ -1,17 +1,21 @@
 import tensorflow as tf
 import argparse
-from config import config, default
+import data_input
+import verification
+import mxnet as mx
+from common import block, utils
+from tensorflow import keras
+from config import config, default, generate_config
 from data.mx2tfrecords import parse_function
 import os
 from nets.L_Resnet_E_IR_fix_issue9 import get_resnet
-from losses.face_losses import make_logits
 from tensorflow.core.protobuf import config_pb2
 import time
 from data.eval_data_reader import load_bin
-from verification import ver_test
 
 
-def parse_args():
+
+def parse_args__():
     parser = argparse.ArgumentParser(description='parameters to train net')
     parser.add_argument('--net_depth', default=100, help='resnet depth, default is 50')
     parser.add_argument('--epoch', default=100000, help='epoch to train the network')
@@ -40,232 +44,153 @@ def parse_args():
     return args
 
 
-def get_symbol(args):
-    embedding = eval(config.net_name).get_symbol()
-    gt_label = mx.symbol.Variable('softmax_label')
-    fc7 = make_logits(embedding, gt_label, num)
-    out_list = [mx.symbol.BlockGrad(embedding)]
-    softmax = mx.symbol.SoftmaxOutput(data=fc7, label = gt_label, name='softmax', normalization='valid')
-    out_list.append(softmax)
-    if config.ce_loss:
-        #ce_loss = mx.symbol.softmax_cross_entropy(data=fc7, label = gt_label, name='ce_loss')/args.per_batch_size
-        body = mx.symbol.SoftmaxActivation(data=fc7)
-        body = mx.symbol.log(body)
-        _label = mx.sym.one_hot(gt_label, depth = config.num_classes, on_value = -1.0, off_value = 0.0)
-        body = body*_label
-        ce_loss = mx.symbol.sum(body)/args.per_batch_size
-        out_list.append(mx.symbol.BlockGrad(ce_loss))
-    out = mx.symbol.Group(out_list)
-    return out
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train face network')
+    # general
+    parser.add_argument('--dataset', default=default.dataset, help='dataset config')
+    parser.add_argument('--network', default=default.network, help='network config')
+    parser.add_argument('--loss', default=default.loss, help='loss config')
+    args, rest = parser.parse_known_args()
+    generate_config(args.network, args.dataset, args.loss)
+    parser.add_argument('--models-root', default=default.models_root, help='root directory to save model.')
+    parser.add_argument('--pretrained', default=default.pretrained, help='pretrained model to load')
+    parser.add_argument('--pretrained-epoch', type=int, default=default.pretrained_epoch, help='pretrained epoch to load')
+    parser.add_argument('--ckpt', type=int, default=default.ckpt, help='checkpoint saving option. 0: discard saving. 1: save when necessary. 2: always save')
+    parser.add_argument('--verbose', type=int, default=default.verbose, help='do verification testing and model saving every verbose batches')
+    parser.add_argument('--lr', type=float, default=default.lr, help='start learning rate')
+    parser.add_argument('--lr-steps', type=str, default=default.lr_steps, help='steps of lr changing')
+    parser.add_argument('--wd', type=float, default=default.wd, help='weight decay')
+    parser.add_argument('--mom', type=float, default=default.mom, help='momentum')
+    parser.add_argument('--frequent', type=int, default=default.frequent, help='')
+    parser.add_argument('--kvstore', type=str, default=default.kvstore, help='kvstore setting')
+    args = parser.parse_args()
+    return args
+
+
+def build_model():
+    data = keras.Input(shape=[112, 112, 3], name='data')
+    embedding = eval(config.net_name).get_symbol(data, config.emb_size, None, config.net_act, args.wd)
+    extractor = keras.Model(inputs=data, outputs=embedding, name='extractor')
+
+    label = keras.Input(shape=(1,), name='label')
+    fc7 = block.FaceCategoryOutput(config.num_classes, loss_type=config.loss_name, s=config.loss_s, m1=config.loss_m1, m2=config.loss_m2, m3=config.loss_m3)(embedding, label)
+    classifier = keras.Model(inputs=[data, label], outputs=fc7, name='classifier')
+
+    return extractor, classifier
 
 
 def train_net(args):
-    ctx = []
-    cvd = os.environ['CUDA_VISIBLE_DEVICES'].strip()
-    if len(cvd)>0:
-      for i in xrange(len(cvd.split(','))):
-        ctx.append(mx.gpu(i))
-    if len(ctx)==0:
-      ctx = [mx.cpu()]
-      print('use cpu')
-    else:
-      print('gpu num:', len(ctx))
-    prefix = os.path.join(args.models_root, '%s-%s-%s'%(args.network, args.loss, args.dataset), 'model')
-    prefix_dir = os.path.dirname(prefix)
-    print('prefix', prefix)
-    if not os.path.exists(prefix_dir):
-      os.makedirs(prefix_dir)
-    args.ctx_num = len(ctx)
-    args.batch_size = args.per_batch_size*args.ctx_num
-    args.rescale_threshold = 0
-    args.image_channel = config.image_shape[2]
-    config.batch_size = args.batch_size
-    config.per_batch_size = args.per_batch_size
-
     data_dir = config.dataset_path
-    path_imgrec = None
-    path_imglist = None
     image_size = config.image_shape[0:2]
-    assert len(image_size)==2
-    assert image_size[0]==image_size[1]
+    assert len(image_size) == 2
+    assert image_size[0] == image_size[1]
     print('image_size', image_size)
     print('num_classes', config.num_classes)
-    path_imgrec = os.path.join(data_dir, "train.rec")
+    training_path = os.path.join(data_dir, "train.tfrecords")
 
     print('Called with argument:', args, config)
-    data_shape = (args.image_channel,image_size[0],image_size[1])
-    mean = None
+    train_dataset = data_input.training_dataset(training_path, args.batch_size)
+    data_shape = (image_size[0], image_size[1], args.image_channel)
 
     begin_epoch = 0
-    if len(args.pretrained)==0:
-      arg_params = None
-      aux_params = None
-      sym = get_symbol(args)
-      if config.net_name=='spherenet':
-        data_shape_dict = {'data' : (args.per_batch_size,)+data_shape}
-        spherenet.init_weights(sym, data_shape_dict, args.num_layers)
+    extractor, classifier = build_model()
+
+    ckpt_path = os.path.join(args.models_root, '%s-%s-%s' % (args.network, args.loss, args.dataset), 'model-{epoch:04d}.ckpt')
+    ckpt_dir = os.path.dirname(ckpt_path)
+    print('ckpt_path', ckpt_path)
+    if not os.path.exists(ckpt_dir):
+        os.makedirs(ckpt_dir)
+    if len(args.pretrained) == 0:
+        latest = tf.train.latest_checkpoint(ckpt_path)
+        if latest:
+            classifier.load_weights(latest)
     else:
-      print('loading', args.pretrained, args.pretrained_epoch)
-      _, arg_params, aux_params = mx.model.load_checkpoint(args.pretrained, args.pretrained_epoch)
-      sym = get_symbol(args)
+        print('loading', args.pretrained, args.pretrained_epoch)
+        load_path = os.path.join(args.pretrained, '-', args.pretrained_epoch, '.ckpt')
+        classifier.load_weights(load_path)
+    ckpt_callback = keras.callbacks.ModelCheckpoint(ckpt_path, verbose=1, save_weights_only=True, period=1)
+    callbacks = [ckpt_callback]
 
-    if config.count_flops:
-      all_layers = sym.get_internals()
-      _sym = all_layers['fc1_output']
-      FLOPs = flops_counter.count_flops(_sym, data=(1,3,image_size[0],image_size[1]))
-      _str = flops_counter.flops_str(FLOPs)
-      print('Network FLOPs: %s'%_str)
-
-    #label_name = 'softmax_label'
-    #label_shape = (args.batch_size,)
-    model = mx.mod.Module(
-        context       = ctx,
-        symbol        = sym,
-    )
-    val_dataiter = None
-
-    if config.loss_name.find('triplet')>=0:
-      from triplet_image_iter import FaceImageIter
-      triplet_params = [config.triplet_bag_size, config.triplet_alpha, config.triplet_max_ap]
-      train_dataiter = FaceImageIter(
-          batch_size           = args.batch_size,
-          data_shape           = data_shape,
-          path_imgrec          = path_imgrec,
-          shuffle              = True,
-          rand_mirror          = config.data_rand_mirror,
-          mean                 = mean,
-          cutoff               = config.data_cutoff,
-          ctx_num              = args.ctx_num,
-          images_per_identity  = config.images_per_identity,
-          triplet_params       = triplet_params,
-          mx_model             = model,
-      )
-      _metric = LossValueMetric()
-      eval_metrics = [mx.metric.create(_metric)]
-    else:
-      from image_iter import FaceImageIter
-      train_dataiter = FaceImageIter(
-          batch_size           = args.batch_size,
-          data_shape           = data_shape,
-          path_imgrec          = path_imgrec,
-          shuffle              = True,
-          rand_mirror          = config.data_rand_mirror,
-          mean                 = mean,
-          cutoff               = config.data_cutoff,
-          color_jittering      = config.data_color,
-          images_filter        = config.data_images_filter,
-      )
-      metric1 = AccMetric()
-      eval_metrics = [mx.metric.create(metric1)]
-      if config.ce_loss:
-        metric2 = LossValueMetric()
-        eval_metrics.append( mx.metric.create(metric2) )
-
-    if config.net_name=='fresnet' or config.net_name=='fmobilefacenet':
-      initializer = mx.init.Xavier(rnd_type='gaussian', factor_type="out", magnitude=2) #resnet style
-    else:
-      initializer = mx.init.Xavier(rnd_type='uniform', factor_type="in", magnitude=2)
-    #initializer = mx.init.Xavier(rnd_type='gaussian', factor_type="out", magnitude=2) #resnet style
-    _rescale = 1.0/args.ctx_num
-    opt = optimizer.SGD(learning_rate=args.lr, momentum=args.mom, wd=args.wd, rescale_grad=_rescale)
-    _cb = mx.callback.Speedometer(args.batch_size, args.frequent)
-
-    ver_list = []
-    ver_name_list = []
-    for name in config.val_targets:
-      path = os.path.join(data_dir,name+".bin")
-      if os.path.exists(path):
-        data_set = verification.load_bin(path, image_size)
-        ver_list.append(data_set)
-        ver_name_list.append(name)
-        print('ver', name)
+    lr_decay_steps = [int(x) for x in args.lr_steps.split(',')]
+    print('lr_steps', lr_decay_steps)
+    callbacks.append(utils.get_step_lr_callback(lr_decay_steps, on_batch=True))
 
 
+    valid_list, valid_name_list = data_input.load_valid_set(data_dir, config.val_targets, image_size)
 
     def ver_test(nbatch):
-      results = []
-      for i in range(len(ver_list)):
-        acc1, std1, acc2, std2, xnorm, embeddings_list = verification.test(ver_list[i], model, args.batch_size, 10, None, None)
-        print('[%s][%d]XNorm: %f' % (ver_name_list[i], nbatch, xnorm))
-        #print('[%s][%d]Accuracy: %1.5f+-%1.5f' % (ver_name_list[i], nbatch, acc1, std1))
-        print('[%s][%d]Accuracy-Flip: %1.5f+-%1.5f' % (ver_name_list[i], nbatch, acc2, std2))
-        results.append(acc2)
-      return results
-
-
+        results = []
+        for i in range(len(valid_list)):
+            acc, std, xnorm, embeddings_list = verification.test(valid_list[i], model, args.batch_size, 10, None, None)
+            print('[%s][%d]XNorm: %f' % (valid_name_list[i], nbatch, xnorm))
+            print('[%s][%d]Accuracy-Flip: %1.5f+-%1.5f' % (valid_name_list[i], nbatch, acc, std))
+            results.append(acc)
+        return results
 
     highest_acc = [0.0, 0.0]  #lfw and target
     #for i in xrange(len(ver_list)):
     #  highest_acc.append(0.0)
     global_step = [0]
     save_step = [0]
-    lr_steps = [int(x) for x in args.lr_steps.split(',')]
     print('lr_steps', lr_steps)
     def _batch_callback(param):
-      #global global_step
-      global_step[0]+=1
-      mbatch = global_step[0]
-      for step in lr_steps:
-        if mbatch==step:
-          opt.lr *= 0.1
-          print('lr change to', opt.lr)
-          break
+        #global global_step
+        global_step[0]+=1
+        mbatch = global_step[0]
 
-      _cb(param)
-      if mbatch%1000==0:
-        print('lr-batch-epoch:',opt.lr,param.nbatch,param.epoch)
+        if mbatch%1000==0:
+            print('lr-batch-epoch:',opt.lr,param.nbatch,param.epoch)
 
-      if mbatch>=0 and mbatch%args.verbose==0:
-        acc_list = ver_test(mbatch)
-        save_step[0]+=1
-        msave = save_step[0]
-        do_save = False
-        is_highest = False
-        if len(acc_list)>0:
-          #lfw_score = acc_list[0]
-          #if lfw_score>highest_acc[0]:
-          #  highest_acc[0] = lfw_score
-          #  if lfw_score>=0.998:
-          #    do_save = True
-          score = sum(acc_list)
-          if acc_list[-1]>=highest_acc[-1]:
-            if acc_list[-1]>highest_acc[-1]:
-              is_highest = True
-            else:
-              if score>=highest_acc[0]:
-                is_highest = True
-                highest_acc[0] = score
-            highest_acc[-1] = acc_list[-1]
-            #if lfw_score>=0.99:
-            #  do_save = True
-        if is_highest:
-          do_save = True
-        if args.ckpt==0:
-          do_save = False
-        elif args.ckpt==2:
-          do_save = True
-        elif args.ckpt==3:
-          msave = 1
+        if mbatch>=0 and mbatch%args.verbose==0:
+            acc_list = ver_test(mbatch)
+            save_step[0]+=1
+            msave = save_step[0]
+            do_save = False
+            is_highest = False
+            if len(acc_list)>0:
+                score = sum(acc_list)
+                if acc_list[-1]>=highest_acc[-1]:
+                    if acc_list[-1]>highest_acc[-1]:
+                        is_highest = True
+                    else:
+                        if score>=highest_acc[0]:
+                            is_highest = True
+                            highest_acc[0] = score
+                    highest_acc[-1] = acc_list[-1]
+            if is_highest:
+                do_save = True
+            if args.ckpt==0:
+                do_save = False
+            elif args.ckpt==2:
+                do_save = True
+            elif args.ckpt==3:
+                msave = 1
 
-        if do_save:
-          print('saving', msave)
-          arg, aux = model.get_params()
-          if config.ckpt_embedding:
-            all_layers = model.symbol.get_internals()
-            _sym = all_layers['fc1_output']
-            _arg = {}
-            for k in arg:
-              if not k.startswith('fc7'):
-                _arg[k] = arg[k]
-            mx.model.save_checkpoint(prefix, msave, _sym, _arg, aux)
-          else:
-            mx.model.save_checkpoint(prefix, msave, model.symbol, arg, aux)
-        print('[%d]Accuracy-Highest: %1.5f'%(mbatch, highest_acc[-1]))
-      if config.max_steps>0 and mbatch>config.max_steps:
-        sys.exit(0)
+            if do_save:
+                print('saving', msave)
+                arg, aux = model.get_params()
+                if config.ckpt_embedding:
+                    all_layers = model.symbol.get_internals()
+                    _sym = all_layers['fc1_output']
+                    _arg = {}
+                    for k in arg:
+                        if not k.startswith('fc7'):
+                            _arg[k] = arg[k]
+                    mx.model.save_checkpoint(prefix, msave, _sym, _arg, aux)
+                else:
+                    mx.model.save_checkpoint(prefix, msave, model.symbol, arg, aux)
+            print('[%d]Accuracy-Highest: %1.5f'%(mbatch, highest_acc[-1]))
+        if config.max_steps>0 and mbatch>config.max_steps:
+            sys.exit(0)
 
     epoch_cb = None
     train_dataiter = mx.io.PrefetchingIter(train_dataiter)
+
+    classifier.compile(optimizer=keras.optimizers.SGD(lr=args.lr, momentum=args.mom),
+                       loss=keras.losses.CategoricalCrossentropy(from_logits=True),
+                       metrics=[keras.metrics.SparseCategoricalAccuracy()])
+
+    classifier.fit
 
     model.fit(train_dataiter,
         begin_epoch        = begin_epoch,

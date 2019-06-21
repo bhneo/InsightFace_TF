@@ -164,17 +164,17 @@ def data_iter(datasets, batch_size):
         yield datasets[i:min(i+batch_size, data_num), ...]
 
 
-def test(data_set, sess, embedding_tensor, batch_size, label_shape=None, feed_dict=None, input_placeholder=None):
+def test(data_set, embedding, batch_size, fold=10):
     print('testing verification..')
     data_list = data_set[0]
     is_same_list = data_set[1]
     embeddings_list = []
     time_consumed = 0.0
     for i in range(len(data_list)):
-        datas = data_list[i]
+        data = data_list[i]
         embeddings = None
         feed_dict.setdefault(input_placeholder, None)
-        for idx, data in enumerate(data_iter(datas, batch_size)):
+        for idx, data in enumerate(data_iter(data, batch_size)):
             data_tmp = data.copy()    # fix issues #4
             data_tmp -= 127.5
             data_tmp *= 0.0078125
@@ -200,29 +200,26 @@ def test(data_set, sess, embedding_tensor, batch_size, label_shape=None, feed_di
         for i in range(embed.shape[0]):
             _em = embed[i]
             _norm = np.linalg.norm(_em)
-            # print(_em.shape, _norm)
             _xnorm += _norm
             _xnorm_cnt += 1
     _xnorm /= _xnorm_cnt
 
-    acc1 = 0.0
-    std1 = 0.0
     embeddings = embeddings_list[0] + embeddings_list[1]
     embeddings = sklearn.preprocessing.normalize(embeddings)
     print(embeddings.shape)
     print('infer time', time_consumed)
-    _, _, accuracy, val, val_std, far = evaluate(embeddings, is_same_list, nrof_folds=10)
-    acc2, std2 = np.mean(accuracy), np.std(accuracy)
-    return acc1, std1, acc2, std2, _xnorm, embeddings_list
+    _, _, accuracy, val, val_std, far = evaluate(embeddings, is_same_list, nrof_folds=fold)
+    acc, std = np.mean(accuracy), np.std(accuracy)
+    return acc, std, _xnorm, embeddings_list
 
 
-def ver_test(ver_list, ver_name_list, nbatch, sess, embedding_tensor, batch_size, feed_dict, input_placeholder):
+def ver_test(ver_list, ver_name_list, batch, sess, embedding_tensor, batch_size, feed_dict, input_placeholder):
     results = []
     for i in range(len(ver_list)):
-        acc1, std1, acc2, std2, xnorm, embeddings_list = test(data_set=ver_list[i], sess=sess, embedding_tensor=embedding_tensor,
-                                                              batch_size=batch_size, feed_dict=feed_dict,
-                                                              input_placeholder=input_placeholder)
-        print('[%s][%d]XNorm: %f' % (ver_name_list[i], nbatch, xnorm))
-        print('[%s][%d]Accuracy-Flip: %1.5f+-%1.5f' % (ver_name_list[i], nbatch, acc2, std2))
-        results.append(acc2)
+        acc, std, x_norm, embeddings_list = test(data_set=ver_list[i], sess=sess, embedding_tensor=embedding_tensor,
+                                                 batch_size=batch_size, feed_dict=feed_dict,
+                                                 input_placeholder=input_placeholder)
+        print('[%s][%d]XNorm: %f' % (ver_name_list[i], batch, x_norm))
+        print('[%s][%d]Accuracy-Flip: %1.5f+-%1.5f' % (ver_name_list[i], batch, acc, std))
+        results.append(acc)
     return results

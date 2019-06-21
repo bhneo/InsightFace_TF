@@ -1,9 +1,11 @@
 import tensorflow as tf
 import time
+from tensorflow import keras
+from tensorflow.python.keras.layers import Layer
 from config import config as cfg
 
 
-def make_logits(embedding, label, class_num, loss_type='margin_softmax', s=64.0, m1=1.0, m2=0.5, m3=0.0, w=None, use_bias=False):
+def make_logits(embedding, label_one_hot, class_num, loss_type='margin_softmax', s=64.0, m1=1.0, m2=0.5, m3=0.0, w=None, use_bias=False):
     embedding_size = embedding.get_shape().as_list()[-1]
     if w is None:
         w = tf.Variable(tf.random_normal([embedding_size, class_num], stddev=0.01), name='fc7_weight')
@@ -17,7 +19,7 @@ def make_logits(embedding, label, class_num, loss_type='margin_softmax', s=64.0,
         if m1 != 1.0 or m2 != 0.0 or m3 != 0.0:
             if m1 == 1.0 and m2 == 0.0:
                 s_m = s * m3
-                label_one_hot = tf.one_hot(label, depth=class_num, on_value=s_m, off_value=0.0)
+                label_one_hot = label_one_hot * s_m
                 fc7 = fc7 - label_one_hot
             else:
                 cos_t = fc7 / s
@@ -29,8 +31,7 @@ def make_logits(embedding, label, class_num, loss_type='margin_softmax', s=64.0,
                 body = tf.math.cos(t)
                 if m3 > 0.0:
                     body = body - m3
-                diff = body * s - cos_t
-                label_one_hot = tf.one_hot(label, depth=class_num, on_value=1.0, off_value=0.0)
+                diff = body * s - fc7
                 body = tf.multiply(label_one_hot, diff)
                 fc7 = fc7 + body
     else:
@@ -41,7 +42,7 @@ def make_logits(embedding, label, class_num, loss_type='margin_softmax', s=64.0,
     return fc7
 
 
-def make_logits_v2(embedding, label, class_num, loss_type='margin_softmax', s=64.0, m1=1.0, m2=0.5, m3=0.0, w=None, use_bias=False):
+def make_logits_v2(embedding, one_hot_label, class_num, loss_type='margin_softmax', s=64.0, m1=1.0, m2=0.5, m3=0.0, w=None, use_bias=False):
     embedding_size = embedding.get_shape().as_list()[-1]
     if w is None:
         w = tf.Variable(tf.random_normal([embedding_size, class_num], stddev=0.01), name='fc7_weight')
@@ -51,16 +52,11 @@ def make_logits_v2(embedding, label, class_num, loss_type='margin_softmax', s=64
         w_norm = tf.norm(w, axis=0, keepdims=True)
         w = w / w_norm
         embedding_norm_scale = embedding * s
-        # if cfg.debug:
-        #     test_norm = tf.norm(embedding, axis=-1)
-        #     print('embedding norm test:', test_norm)
-        #     test_norm = tf.norm(w, axis=0)
-        #     print('weights norm test:', test_norm)
         fc7 = tf.matmul(embedding_norm_scale, w, name='fc7')
         if m1 != 1.0 or m2 != 0.0 or m3 != 0.0:
             if m1 == 1.0 and m2 == 0.0:
                 s_m = s * m3
-                label_one_hot = tf.one_hot(label, depth=class_num, on_value=s_m, off_value=0.0)
+                label_one_hot = one_hot_label * s_m
                 fc7 = fc7 - label_one_hot
             else:
                 cos_t = fc7 / s
@@ -73,9 +69,8 @@ def make_logits_v2(embedding, label, class_num, loss_type='margin_softmax', s=64
                 if m3 > 0.0:
                     body = body - m3
                 body = body * s
-                label_one_hot = tf.one_hot(label, depth=class_num, on_value=1.0, off_value=0.0)
-                mask = 1 - label_one_hot
-                fc7 = fc7*mask + body*label_one_hot
+                mask = 1 - one_hot_label
+                fc7 = fc7*mask + body*one_hot_label
     else:
         fc7 = tf.matmul(embedding, w)
         if use_bias:
@@ -84,56 +79,109 @@ def make_logits_v2(embedding, label, class_num, loss_type='margin_softmax', s=64
     return fc7
 
 
-def cosineface_losses(embedding, labels, out_num, w_init=None, s=30., m=0.4):
-    '''
-    :param embedding: the input embedding vectors
-    :param labels:  the input labels, the shape should be eg: (batch_size, 1)
-    :param s: scalar value, default is 30
-    :param out_num: output class num
-    :param m: the margin value, default is 0.4
-    :return: the final cacualted output, this output is send into the tf.nn.softmax directly
-    '''
-    with tf.variable_scope('cosineface_loss'):
-        # inputs and weights norm
-        embedding_norm = tf.norm(embedding, axis=1, keep_dims=True)
-        embedding = tf.div(embedding, embedding_norm, name='norm_embedding')
-        weights = tf.get_variable(name='embedding_weights', shape=(embedding.get_shape().as_list()[-1], out_num),
-                                  initializer=w_init, dtype=tf.float32)
-        weights_norm = tf.norm(weights, axis=0, keep_dims=True)
-        weights = tf.div(weights, weights_norm, name='norm_weights')
-        # cos_theta - m
-        cos_t = tf.matmul(embedding, weights, name='cos_t')
-        cos_t_m = tf.subtract(cos_t, m, name='cos_t_m')
+class FaceCategoryOutput(Layer):
+    def __init__(self, units, loss_type='margin_softmax', act='softmax', s=64.0, m1=1.0, m2=0.5, m3=0.0, w=None, use_bias=False, name='face_category'):
+        super(FaceCategoryOutput, self).__init__(name=name)
+        self.units = units
+        self.loss_type = loss_type
+        self.act = act
+        self.s = s
+        self.m1 = m1
+        self.m2 = m2
+        self.m3 = m3
+        self.use_bias = use_bias
+        self.w = w
 
-        mask = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
-        inv_mask = tf.subtract(1., mask, name='inverse_mask')
+    def build(self, input_shape):
+        if self.w is None:
+            self.w = self.add_weight(name='fc7_weight',
+                                     shape=(input_shape[-1], self.units),
+                                     initializer=tf.random_normal_initializer(stddev=0.01),
+                                     trainable=True)
+        if self.loss_type != 'margin_softmax' and self.use_bias:
+            self.b = self.add_weight(name='fc7_bias',
+                                     shape=[self.units, ],
+                                     initializer=tf.zeros_initializer(),
+                                     trainable=True)
 
-        output = tf.add(s * tf.multiply(cos_t, inv_mask), s * tf.multiply(cos_t_m, mask), name='cosineface_loss_output')
-    return output
+    def call(self, inputs, label):
+        label_one_hot = tf.one_hot(label, self.units)
+        if self.loss_type == 'margin_softmax':
+            embedding_norm = tf.norm(inputs, axis=-1, keepdims=True, name='fc1n')
+            embedding = inputs / embedding_norm
+            w_norm = tf.norm(self.w, axis=0, keepdims=True)
+            w = self.w / w_norm
+            embedding_norm_scale = embedding * self.s
+            fc7 = tf.matmul(embedding_norm_scale, w, name='fc7')
+            if self.m1 != 1.0 or self.m2 != 0.0 or self.m3 != 0.0:
+                if self.m1 == 1.0 and self.m2 == 0.0:
+                    s_m = self.s * self.m3
+                    label_one_hot = label_one_hot * s_m
+                    fc7 = fc7 - label_one_hot
+                else:
+                    cos_t = fc7 / self.s
+                    t = tf.math.acos(cos_t)
+                    if self.m1 != 1.0:
+                        t = t * self.m1
+                    if self.m2 > 0.0:
+                        t = t + self.m2
+                    body = tf.math.cos(t)
+                    if self.m3 > 0.0:
+                        body = body - self.m3
+                    diff = body * self.s - fc7
+                    body = tf.multiply(label_one_hot, diff)
+                    fc7 = fc7 + body
+        else:
+            fc7 = tf.matmul(inputs, self.w)
+            if self.use_bias:
+                fc7 = tf.add(fc7, self.b)
+        if self.act:
+            fc7 = keras.layers.Activation(self.act)(fc7)
+        return fc7
+
+    def get_config(self):
+        return {'units': self.units,
+                'act': self.act,
+                'loss_type': self.loss_type,
+                's': self.s,
+                'm1': self.m1,
+                'm2': self.m2,
+                'm3': self.m3,
+                'use_bias': self.use_bias}
 
 
 if __name__ == '__main__':
     cfg.debug = True
     tf.enable_eager_execution()
-    batch_num = 5000
+    batch_num = 1
     batch_size = 2048
     feature_dim = 512
     persons = 100
     embeddings = tf.constant(tf.random_normal([batch_size, feature_dim]))
     ws = tf.Variable(tf.random_normal([feature_dim, persons]))
     labels = tf.constant(tf.random_uniform([batch_size, ], maxval=persons, dtype=tf.int32))
+    labels_one_hot = tf.one_hot(labels, persons)
 
-    tmp = make_logits(embeddings, labels, persons, w=ws)
+    tmp = make_logits(embeddings, labels_one_hot, persons, w=ws)
+    face_out = FaceCategoryOutput(persons, w=ws, act=None)
 
     start = time.time()
     for _ in range(batch_num):
-        out1 = make_logits(embeddings, labels, persons, w=ws)
+        out1 = make_logits(embeddings, labels_one_hot, persons, w=ws)
     t1 = time.time()
     print('logits 1 cost:', t1-start, 's')
     print('out1:', out1)
     for _ in range(batch_num):
-        out2 = make_logits_v2(embeddings, labels, persons, w=ws)
+        out2 = make_logits_v2(embeddings, labels_one_hot, persons, w=ws)
     t2 = time.time()
     print('logits 2 cost:', t2 - t1, 's')
     print('out2:', out2)
+    for _ in range(batch_num):
+        out3 = face_out(embeddings, labels)
+    t3 = time.time()
+    print('logits 3 cost:', t3 - t2, 's')
+    print('out3:', out3)
+    print('out1-out2', tf.reduce_sum(out1 - out2))
+    print('out3-out2', tf.reduce_sum(out3 - out2))
+    print('out3-out1', tf.reduce_sum(out3 - out1))
 

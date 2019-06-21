@@ -170,14 +170,12 @@ def evaluate(embeddings, actual_is_same, nrof_folds=10, pca=0):
     return tpr, fpr, accuracy, val, val_std, far
 
 
-def test(data_set, mx_model, batch_size, nfolds=10, data_extra = None, label_shape = None):
+def test(data_set, mx_model, batch_size, fold=10, data_extra=None, label_shape=None):
     print('testing verification..')
     data_list = data_set[0]
     is_same_list = data_set[1]
     model = mx_model
     embeddings_list = []
-    if data_extra is not None:
-        _data_extra = nd.array(data_extra)
     time_consumed = 0.0
     if label_shape is None:
         _label = nd.ones((batch_size,))
@@ -191,34 +189,17 @@ def test(data_set, mx_model, batch_size, nfolds=10, data_extra = None, label_sha
             bb = min(ba+batch_size, data.shape[0])
             count = bb-ba
             _data = nd.slice_axis(data, axis=0, begin=bb-batch_size, end=bb)
-            #print(_data.shape, _label.shape)
             time0 = datetime.datetime.now()
-            if data_extra is None:
-                db = mx.io.DataBatch(data=(_data,), label=(_label,))
-            else:
-                db = mx.io.DataBatch(data=(_data, _data_extra), label=(_label,))
+            db = mx.io.DataBatch(data=(_data,), label=(_label,))
             model.forward(db, is_train=False)
             net_out = model.get_outputs()
-            #_arg, _aux = model.get_params()
-            #__arg = {}
-            #for k,v in _arg.iteritems():
-            #  __arg[k] = v.as_in_context(_ctx)
-            #_arg = __arg
-            #_arg["data"] = _data.as_in_context(_ctx)
-            #_arg["softmax_label"] = _label.as_in_context(_ctx)
-            #for k,v in _arg.iteritems():
-            #  print(k,v.context)
-            #exe = sym.bind(_ctx, _arg ,args_grad=None, grad_req="null", aux_states=_aux)
-            #exe.forward(is_train=False)
-            #net_out = exe.outputs
             _embeddings = net_out[0].asnumpy()
             time_now = datetime.datetime.now()
             diff = time_now - time0
             time_consumed += diff.total_seconds()
-            #print(_embeddings.shape)
             if embeddings is None:
-                embeddings = np.zeros( (data.shape[0], _embeddings.shape[1]) )
-            embeddings[ba:bb,:] = _embeddings[(batch_size-count):,:]
+                embeddings = np.zeros((data.shape[0], _embeddings.shape[1]))
+            embeddings[ba:bb, :] = _embeddings[(batch_size-count):, :]
             ba = bb
         embeddings_list.append(embeddings)
 
@@ -227,28 +208,18 @@ def test(data_set, mx_model, batch_size, nfolds=10, data_extra = None, label_sha
     for embed in embeddings_list:
         for i in range(embed.shape[0]):
             _em = embed[i]
-            _norm=np.linalg.norm(_em)
-            #print(_em.shape, _norm)
-            _xnorm+=_norm
-            _xnorm_cnt+=1
+            _norm = np.linalg.norm(_em)
+            _xnorm += _norm
+            _xnorm_cnt += 1
     _xnorm /= _xnorm_cnt
 
-    embeddings = embeddings_list[0].copy()
-    embeddings = sklearn.preprocessing.normalize(embeddings)
-    acc1 = 0.0
-    std1 = 0.0
-    #_, _, accuracy, val, val_std, far = evaluate(embeddings, issame_list, nrof_folds=10)
-    #acc1, std1 = np.mean(accuracy), np.std(accuracy)
-
-    #print('Validation rate: %2.5f+-%2.5f @ FAR=%2.5f' % (val, val_std, far))
-    #embeddings = np.concatenate(embeddings_list, axis=1)
     embeddings = embeddings_list[0] + embeddings_list[1]
     embeddings = sklearn.preprocessing.normalize(embeddings)
     print(embeddings.shape)
     print('infer time', time_consumed)
-    _, _, accuracy, val, val_std, far = evaluate(embeddings, is_same_list, nrof_folds=nfolds)
-    acc2, std2 = np.mean(accuracy), np.std(accuracy)
-    return acc1, std1, acc2, std2, _xnorm, embeddings_list
+    _, _, accuracy, val, val_std, far = evaluate(embeddings, is_same_list, nrof_folds=fold)
+    acc, std = np.mean(accuracy), np.std(accuracy)
+    return acc, std, _xnorm, embeddings_list
 
 
 def test_badcase(data_set, mx_model, batch_size, name='', data_extra = None, label_shape = None):

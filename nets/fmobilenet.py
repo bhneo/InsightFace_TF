@@ -22,6 +22,7 @@ import symbol_utils
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from config import config
 
+
 def Act(data, act_type, name):
     #ignore param act_type, set it in this function 
     if act_type=='prelu':
