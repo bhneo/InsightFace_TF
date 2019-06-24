@@ -1,14 +1,18 @@
 import os
 import pickle
+import io
+import PIL.Image
+
+import matplotlib.pyplot as plt
+import mxnet as mx
 import numpy as np
 import tensorflow as tf
-import mxnet as mx
-import matplotlib.pyplot as plt
-
-from config import config
 
 
-def parse_function(example_proto):
+TRAIN_SET_NUM = 5822653
+
+
+def train_parse_function(example_proto):
     features = {'image_raw': tf.FixedLenFeature([], tf.string),
                 'label': tf.FixedLenFeature([], tf.int64)}
     features = tf.parse_single_example(example_proto, features)
@@ -20,18 +24,30 @@ def parse_function(example_proto):
     return img, label
 
 
+def get_valid_parse_function(flip):
+    def valid_parse_function(_bin):
+        img = tf.image.decode_jpeg(_bin)
+        img = tf.image.resize_images(img, [112, 112])
+        img = tf.cast(img, dtype=tf.float32)
+        if flip:
+            img = tf.image.flip_left_right(img)
+        return img
+    return valid_parse_function
+
+
 def training_dataset(tf_record_path, batch_size=128, shuffle_buffer=50000):
     dataset = tf.data.TFRecordDataset(tf_record_path)
-    dataset = dataset.map(parse_function, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    dataset = dataset.map(train_parse_function, num_parallel_calls=tf.data.experimental.AUTOTUNE)
     if shuffle_buffer is not 0:
         dataset = dataset.shuffle(buffer_size=shuffle_buffer)
     dataset = dataset.batch(batch_size)
     dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-    return dataset
+    batch_num = TRAIN_SET_NUM // batch_size
+    return dataset, batch_num
 
 
 def get_training_pipeline(tf_record_path, batch_size=128, shuffle_buffer=50000):
-    dataset = training_dataset(tf_record_path, batch_size, shuffle_buffer)
+    dataset, _ = training_dataset(tf_record_path, batch_size, shuffle_buffer)
     iterator = dataset.make_initializable_iterator()
     next_element = iterator.get_next()
     return iterator, next_element
@@ -42,7 +58,7 @@ def count_training_data():
     tf_records = os.path.join('data', 'train.tfrecords')
     if not os.path.exists(tf_records):
         raise FileExistsError(tf_records)
-    batch_size = 128
+    batch_size = 1000
     iterator, next_element = get_training_pipeline(tf_records, batch_size, 0)
     sess.run(iterator.initializer)
     dataset_size = 0
@@ -51,6 +67,8 @@ def count_training_data():
         try:
             images, labels = sess.run(next_element)
             dataset_size += images.shape[0]
+            if images.shape[0] % 128 != 0:
+                print('last batch size:', images.shape[0])
             steps += 1
             if steps % 10000 == 0:
                 print('steps', steps)
@@ -92,14 +110,18 @@ def load_eval_data(dataset_list, image_size, path='data'):
         ver_name_list.append(db)
 
 
-def load_bin(path, image_size):
+def read_bin(path):
     try:
         with open(path, 'rb') as f:
             bins, is_same_list = pickle.load(f)  # py2
-    except UnicodeDecodeError as e:
+    except UnicodeDecodeError:
         with open(path, 'rb') as f:
             bins, is_same_list = pickle.load(f, encoding='bytes')
+    return bins, is_same_list
 
+
+def load_bin(path, image_size):
+    bins, is_same_list = read_bin(path)
     data_list = []
     for _ in [0, 1]:
         data = np.empty((len(is_same_list)*2, image_size[0], image_size[1], 3))
@@ -107,6 +129,7 @@ def load_bin(path, image_size):
     for i in range(len(is_same_list)*2):
         _bin = bins[i]
         img = mx.image.imdecode(_bin)
+
         if img.shape[1] != image_size[0]:
             img = mx.image.resize_short(img, image_size[0])
         for flip in [0, 1]:
@@ -119,20 +142,81 @@ def load_bin(path, image_size):
     return data_list, is_same_list
 
 
-def load_valid_set(data_dir, dataset_list, image_size=(112, 112)):
-    valid_list = []
-    valid_name_list = []
+def read_valid_sets(data_dir, dataset_list):
+    valid_set = {}
     for name in dataset_list:
         path = os.path.join(data_dir, name + ".bin")
         if os.path.exists(path):
-            data_set = load_bin(path, image_size)
-            valid_list.append(data_set)
-            valid_name_list.append(name)
+            bins, is_same_list = read_bin(path)
+            valid_set[name] = (bins, is_same_list)
             print('valid set', name)
-    return valid_list, valid_name_list
+    return valid_set
+
+
+def view_bin(path):
+    bins, is_same_list = read_bin(path)
+    dataset = tf.data.Dataset.from_tensor_slices(bins)
+
+    def parse(_bin):
+        img = tf.image.decode_jpeg(_bin)
+        img = tf.image.resize_images(img, [112, 112])
+        img = tf.cast(img, dtype=tf.float32)
+        img_flip = tf.image.flip_left_right(img)
+        return img, img_flip
+
+    dataset = dataset.map(parse, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+    dataset = dataset.batch(128)
+    iterator = dataset.make_one_shot_iterator()
+    next_element = iterator.get_next()
+
+    sess = tf.Session()
+    images, images_flip = sess.run(next_element)
+    images /= 255.
+    images_flip /= 255.
+    images = np.concatenate((images, images_flip), 1)
+    plt.figure()
+    for k in range(16):
+        plt.subplot(4, 4, k + 1)
+        plt.imshow(images[k, ...])
+        # plt.text(0, 15, labels[k], fontdict={'color': 'red'})
+        # plt.title(labels[k])
+    plt.show()
+
+
+def make_valid_set(path, name, batch_size=1024):
+    source = os.path.join(path, name + '.bin')
+    if os.path.exists(source):
+        try:
+            with open(source, 'rb') as f:
+                bins, is_same_list = pickle.load(f)  # py2
+        except UnicodeDecodeError:
+            with open(source, 'rb') as f:
+                bins, is_same_list = pickle.load(f, encoding='bytes')
+
+        dataset = tf.data.Dataset.from_tensor_slices(bins)\
+            .map(get_valid_parse_function(False), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
+            .batch(batch_size)
+        dataset_flip = tf.data.Dataset.from_tensor_slices(bins) \
+            .map(get_valid_parse_function(True), num_parallel_calls=tf.data.experimental.AUTOTUNE) \
+            .batch(batch_size)
+        return dataset, dataset_flip, is_same_list
+
+
+def load_valid_set(data_dir, dataset_list):
+    valid_set = {}
+    for name in dataset_list:
+        path = os.path.join(data_dir, name + ".bin")
+        if os.path.exists(path):
+            data_set, data_set_flip, is_same_list = make_valid_set(path, name)
+            valid_set[name] = (data_set, data_set_flip, is_same_list)
+            print('valid set {} loaded in tf dataset.', name)
+    return valid_set
 
 
 if __name__ == '__main__':
     # view_training_data()
     # count_training_data()
-    load_valid_set('data', ['lfw', 'cfp_fp', 'agedb_30'])
+    # load_valid_set('data', ['lfw', 'cfp_fp', 'agedb_30'])
+    # read_valid_sets('data', ['lfw', 'cfp_fp', 'agedb_30'])
+    view_bin('data/lfw.bin')
+

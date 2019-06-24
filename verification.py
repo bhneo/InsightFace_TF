@@ -145,16 +145,16 @@ def calculate_val_far(threshold, dist, actual_is_same):
     return val, far
 
 
-def evaluate(embeddings, actual_is_same, nrof_folds=10, pca=0):
+def evaluate(embeddings, actual_is_same, folds=10, pca=0):
     # Calculate evaluation metrics
     thresholds = np.arange(0, 4, 0.01)
     embeddings1 = embeddings[0::2]
     embeddings2 = embeddings[1::2]
     tpr, fpr, accuracy = calculate_roc(thresholds, embeddings1, embeddings2,
-                                       np.asarray(actual_is_same), nrof_folds=nrof_folds, pca=pca)
+                                       np.asarray(actual_is_same), nrof_folds=folds, pca=pca)
     thresholds = np.arange(0, 4, 0.001)
     val, val_std, far = calculate_val(thresholds, embeddings1, embeddings2,
-                                      np.asarray(actual_is_same), 1e-3, nrof_folds=nrof_folds)
+                                      np.asarray(actual_is_same), 1e-3, nrof_folds=folds)
     return tpr, fpr, accuracy, val, val_std, far
 
 
