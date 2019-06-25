@@ -24,17 +24,18 @@ def get_fc1(last_conv, training, embedding_size, fc_type, bn_mom=0.9, wd=0.0005)
     elif fc_type == 'E':
         body = keras.layers.BatchNormalization(epsilon=2e-5, momentum=bn_mom, name='bn1')(body, training=training)
         body = keras.layers.Dropout(rate=0.4)(body, training=training)
-        fc1 = keras.layers.Dense(units=embedding_size, name='pre_fc1')(body)
+        fc1 = keras.layers.Dense(units=embedding_size, name='pre_fc1', kernel_regularizer=keras.regularizers.l2(wd))(body)
         fc1 = keras.layers.BatchNormalization(epsilon=2e-5, momentum=bn_mom, name='fc1')(fc1, training=training)
     elif fc_type == 'FC':
         body = keras.layers.BatchNormalization(epsilon=2e-5, momentum=bn_mom, name='bn1')(body, training=training)
-        fc1 = keras.layers.Dense(units=embedding_size, name='pre_fc1')(body)
+        fc1 = keras.layers.Dense(units=embedding_size, name='pre_fc1', kernel_regularizer=keras.regularizers.l2(wd))(body)
         fc1 = keras.layers.BatchNormalization(epsilon=2e-5, momentum=bn_mom, name='fc1')(fc1, training=training)
     elif fc_type == "GDC":  # mobilefacenet_v1
         conv_6_dw = DWConvBnAct(kernel_size=7, stride=1, padding=0, act_type=None, wd=wd, bn_mom=bn_mom,
-                                name='conv_6dw7_7')(last_conv, training)
-        conv_6_f = keras.layers.Dense(units=embedding_size, name='pre_fc1')(conv_6_dw, training)
-        fc1 = keras.layers.BatchNormalization(eps=2e-5, momentum=bn_mom, name='fc1')(conv_6_f, training)
+                                name='conv_6dw7_7')(last_conv, training=training)
+        conv_6_dw = keras.layers.Flatten()(conv_6_dw)
+        conv_6_f = keras.layers.Dense(units=embedding_size, name='pre_fc1', kernel_regularizer=keras.regularizers.l2(wd))(conv_6_dw)
+        fc1 = keras.layers.BatchNormalization(epsilon=2e-5, momentum=bn_mom, name='fc1')(conv_6_f, training=training)
     return fc1
 
 
@@ -54,8 +55,10 @@ class ConvBnAct(Layer):
     def __init__(self, filters=1, kernel_size=3, stride=1, padding=1, act_type='prelu',
                  use_bias=False, wd=0.0005, bn_mom=0.9, name='conv_bn_act'):
         super(ConvBnAct, self).__init__(name=name)
-
-        self.pad = keras.layers.ZeroPadding2D(padding=padding)
+        if padding > 0:
+            self.pad = keras.layers.ZeroPadding2D(padding=padding)
+        else:
+            self.pad = None
         self.conv = keras.layers.Conv2D(filters, kernel_size, stride,
                                         use_bias=use_bias,
                                         kernel_initializer='glorot_normal',
@@ -64,6 +67,8 @@ class ConvBnAct(Layer):
         self.act = activation(act_type)
 
     def call(self, inputs, training=None):
+        if self.pad:
+            inputs = self.pad(inputs)
         x = self.conv(inputs)
         x = self.bn(x, training=training)
         if self.act:
@@ -75,8 +80,10 @@ class DWConvBnAct(Layer):
     def __init__(self, kernel_size=3, stride=1, padding=1, act_type='prelu',
                  use_bias=False, wd=0.0005, bn_mom=0.9, name='dw_conv_bn_act'):
         super(DWConvBnAct, self).__init__(name=name)
-
-        self.pad = keras.layers.ZeroPadding2D(padding=padding)
+        if padding > 0:
+            self.pad = keras.layers.ZeroPadding2D(padding=padding)
+        else:
+            self.pad = None
         self.dw_conv = keras.layers.DepthwiseConv2D(kernel_size, stride,
                                                     use_bias=use_bias,
                                                     depthwise_initializer='glorot_normal',
@@ -85,6 +92,8 @@ class DWConvBnAct(Layer):
         self.act = activation(act_type)
 
     def call(self, inputs, training=None):
+        if self.pad:
+            inputs = self.pad(inputs)
         x = self.dw_conv(inputs)
         x = self.bn(x, training=training)
         if self.act:
@@ -125,7 +134,7 @@ class FaceCategoryOutput(Layer):
 
     def build(self, input_shape):
         self.w = self.add_weight(name='fc7_weight',
-                                 shape=(input_shape[-1], self.units),
+                                 shape=(input_shape[0][-1].value, self.units),
                                  initializer=tf.random_normal_initializer(stddev=0.01),
                                  trainable=True)
         if self.loss_type != 'margin_softmax' and self.use_bias:
@@ -134,7 +143,8 @@ class FaceCategoryOutput(Layer):
                                      initializer=tf.zeros_initializer(),
                                      trainable=True)
 
-    def call(self, inputs, label):
+    def call(self, inputs):
+        inputs, label = inputs
         label_one_hot = tf.one_hot(label, self.units)
         if self.loss_type == 'margin_softmax':
             embedding_norm = tf.norm(inputs, axis=-1, keepdims=True, name='fc1n')

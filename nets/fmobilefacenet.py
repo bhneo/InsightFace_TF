@@ -49,7 +49,7 @@ def res_depth_wise(data, training, num_block=1, num_out=1, kernel_size=3, stride
     identity = data
     for i in range(num_block):
         shortcut = identity
-        conv = block.DWBlock(num_out=num_out, kernel_size=kernel_size, stride=stride, padding=padding, num_group=num_group, act_type=act_type, wd=wd, bn_mom=config.bn_mom, name=name, suffix=str(i))(identity, training)
+        conv = block.DWBlock(num_out=num_out, kernel_size=kernel_size, stride=stride, padding=padding, num_group=num_group, act_type=act_type, wd=wd, bn_mom=config.bn_mom, name=name, suffix=str(i))(identity, training=training)
         identity = keras.layers.add([conv, shortcut])
     return identity
         
@@ -59,27 +59,27 @@ def get_symbol(inputs, embedding_size, training=None, net_act='prelu', wd=0.0005
     data = block.ImageStandardization()(inputs)
     blocks = config.net_blocks
     conv_1 = block.ConvBnAct(filters=64, kernel_size=3, stride=2, padding=1, wd=wd, bn_mom=config.bn_mom,
-                             act_type=net_act, name='conv_1')(data, training)
+                             act_type=net_act, name='conv_1')(data, training=training)
     if blocks[0] == 1:
         conv_2_dw = block.DWConvBnAct(kernel_size=3, stride=1, padding=1, wd=wd, bn_mom=config.bn_mom,
-                                      act_type=net_act, name='conv_2_dw')(conv_1, training)
+                                      act_type=net_act, name='conv_2_dw')(conv_1, training=training)
     else:
         conv_2_dw = res_depth_wise(conv_1, training, num_block=blocks[0], num_out=64, kernel_size=3, stride=1,
                                    padding=1, num_group=64, wd=wd, act_type=net_act, name='res_2')
     conv_23 = block.DWBlock(num_out=64, kernel_size=3, stride=2, padding=1, num_group=128, act_type=net_act, wd=wd,
-                            bn_mom=config.bn_mom, name='dconv_23')(conv_2_dw, training)
+                            bn_mom=config.bn_mom, name='dconv_23')(conv_2_dw, training=training)
     conv_3 = res_depth_wise(conv_23, training, num_block=blocks[1], num_out=64, kernel_size=3, stride=1, padding=1,
-                            num_group=128, name='res_3')
+                            num_group=128, wd=wd, name='res_3')
     conv_34 = block.DWBlock(num_out=128, kernel_size=3, stride=2, padding=1, num_group=256, act_type=net_act, wd=wd,
-                            bn_mom=config.bn_mom, name='dconv_34')(conv_3, training)
+                            bn_mom=config.bn_mom, name='dconv_34')(conv_3, training=training)
     conv_4 = res_depth_wise(conv_34, training, num_block=blocks[2], num_out=128, kernel_size=3, stride=1, padding=1,
-                            num_group=256, name='res_4')
+                            num_group=256, wd=wd, name='res_4')
     conv_45 = block.DWBlock(num_out=128, kernel_size=3, stride=2, padding=1, num_group=512, act_type=net_act, wd=wd,
-                            bn_mom=config.bn_mom, name='dconv_45')(conv_4, training)
+                            bn_mom=config.bn_mom, name='dconv_45')(conv_4, training=training)
     conv_5 = res_depth_wise(conv_45, training, num_block=blocks[3], num_out=128, kernel_size=3, stride=1, padding=1,
-                            num_group=256, name='res_5')
+                            num_group=256, wd=wd, name='res_5')
     conv_6_sep = block.ConvBnAct(filters=512, kernel_size=1, stride=1, padding=0, wd=wd, bn_mom=config.bn_mom,
-                                 act_type=net_act, name='conv_6sep')(conv_5, training)
+                                 act_type=net_act, name='conv_6sep')(conv_5, training=training)
 
     fc1 = block.get_fc1(conv_6_sep, training, embedding_size, fc_type=config.net_output, bn_mom=config.bn_mom)
 

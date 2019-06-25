@@ -1,13 +1,10 @@
 import os
 import pickle
-import io
-import PIL.Image
 
 import matplotlib.pyplot as plt
 import mxnet as mx
 import numpy as np
 import tensorflow as tf
-
 
 TRAIN_SET_NUM = 5822653
 
@@ -21,7 +18,7 @@ def train_parse_function(example_proto):
     img = tf.cast(img, dtype=tf.float32)
     img = tf.image.random_flip_left_right(img)
     label = tf.cast(features['label'], tf.int64)
-    return img, label
+    return (img, label), label
 
 
 def get_valid_parse_function(flip):
@@ -65,12 +62,12 @@ def count_training_data():
     steps = 0
     while True:
         try:
-            images, labels = sess.run(next_element)
+            (images, labels), labels = sess.run(next_element)
             dataset_size += images.shape[0]
-            if images.shape[0] % 128 != 0:
+            if images.shape[0] % 1000 != 0:
                 print('last batch size:', images.shape[0])
             steps += 1
-            if steps % 10000 == 0:
+            if steps % 100 == 0:
                 print('steps', steps)
         except tf.errors.OutOfRangeError:
             print("Dataset size:", dataset_size)
@@ -83,24 +80,24 @@ def view_training_data():
     if not os.path.exists(tf_records):
         raise FileExistsError(tf_records)
     iterator, next_element = get_training_pipeline(tf_records)
-    for i in range(1000):
-        sess.run(iterator.initializer)
-        while True:
-            try:
-                images, labels = sess.run(next_element)
-                images /= 255.
-                plt.figure()
-                for k in range(16):
-                    plt.subplot(4, 4, k+1)
-                    plt.imshow(images[k, ...])
-                    plt.text(0, 15, labels[k], fontdict={'color': 'red'})
-                    plt.title(labels[k])
-                plt.show()
-            except tf.errors.OutOfRangeError:
-                print("End of dataset")
+    sess.run(iterator.initializer)
+    while True:
+        try:
+            (images, labels), labels = sess.run(next_element)
+            images /= 255.
+            plt.figure()
+            for k in range(16):
+                plt.subplot(4, 4, k+1)
+                plt.imshow(images[k, ...])
+                plt.text(0, 15, labels[k], fontdict={'color': 'red'})
+                plt.title(labels[k])
+            plt.show()
+        except tf.errors.OutOfRangeError:
+            print("End of dataset")
+            break
 
 
-def load_eval_data(dataset_list, image_size, path='data'):
+def load_eval_data(dataset_list, image_size, path='data/faces_emore'):
     ver_list = []
     ver_name_list = []
     for db in dataset_list:
@@ -117,6 +114,10 @@ def read_bin(path):
     except UnicodeDecodeError:
         with open(path, 'rb') as f:
             bins, is_same_list = pickle.load(f, encoding='bytes')
+    if isinstance(bins, list):
+        if len(bins) > 0:
+            if isinstance(bins[0], np.ndarray):
+                bins = [b.tobytes() for b in bins]
     return bins, is_same_list
 
 
@@ -186,13 +187,7 @@ def view_bin(path):
 def make_valid_set(path, name, batch_size=1024):
     source = os.path.join(path, name + '.bin')
     if os.path.exists(source):
-        try:
-            with open(source, 'rb') as f:
-                bins, is_same_list = pickle.load(f)  # py2
-        except UnicodeDecodeError:
-            with open(source, 'rb') as f:
-                bins, is_same_list = pickle.load(f, encoding='bytes')
-
+        bins, is_same_list = read_bin(source)
         dataset = tf.data.Dataset.from_tensor_slices(bins)\
             .map(get_valid_parse_function(False), num_parallel_calls=tf.data.experimental.AUTOTUNE)\
             .batch(batch_size)
@@ -203,13 +198,12 @@ def make_valid_set(path, name, batch_size=1024):
 
 
 def load_valid_set(data_dir, dataset_list):
+    print('load valid set', dataset_list, 'from', data_dir)
     valid_set = {}
     for name in dataset_list:
-        path = os.path.join(data_dir, name + ".bin")
-        if os.path.exists(path):
-            data_set, data_set_flip, is_same_list = make_valid_set(path, name)
-            valid_set[name] = (data_set, data_set_flip, is_same_list)
-            print('valid set {} loaded in tf dataset.', name)
+        data_set, data_set_flip, is_same_list = make_valid_set(data_dir, name)
+        valid_set[name] = (data_set, data_set_flip, is_same_list)
+        print('valid set {} loaded in tf dataset.'.format(name))
     return valid_set
 
 
@@ -217,6 +211,7 @@ if __name__ == '__main__':
     # view_training_data()
     # count_training_data()
     # load_valid_set('data', ['lfw', 'cfp_fp', 'agedb_30'])
-    # read_valid_sets('data', ['lfw', 'cfp_fp', 'agedb_30'])
-    view_bin('data/lfw.bin')
+    # read_valid_sets('data', [['lfw', 'cfp_fp', 'agedb_30', 'calfw', 'cfp_ff', 'cplfw', 'vgg2_fp']])
+    view_bin('data/faces_emore/vgg2_fp.bin')
+    # load_eval_data(['lfw', 'cfp_fp', 'agedb_30'], (112, 112))
 

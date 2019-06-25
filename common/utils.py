@@ -21,9 +21,9 @@ def update_learning_rate(model, steps, step):
     last_lr = float(K.get_value(model.optimizer.lr))
     lr = last_lr
     for i in range(len(steps)):
-        lr = steps[i][1]
         if step < steps[i][0]:
             break
+        lr = steps[i][1]
     if last_lr != lr:
         K.set_value(model.optimizer.lr, lr)
         print('\nStep %05d: LearningRateScheduler reducing learning '

@@ -9,37 +9,9 @@ from tensorflow.python.keras import backend as K
 
 import data_input
 import verification
+from nets import fmobilefacenet
 from common import block, utils
 from config import config, default, generate_config
-
-
-def parse_args__():
-    parser = argparse.ArgumentParser(description='parameters to train net')
-    parser.add_argument('--net_depth', default=100, help='resnet depth, default is 50')
-    parser.add_argument('--epoch', default=100000, help='epoch to train the network')
-    parser.add_argument('--batch_size', default=32, help='batch size to train network')
-    parser.add_argument('--lr_steps', default=[40000, 60000, 80000], help='learning rate to train network')
-    parser.add_argument('--momentum', default=0.9, help='learning alg momentum')
-    parser.add_argument('--weight_deacy', default=5e-4, help='learning alg momentum')
-    # parser.add_argument('--eval_datasets', default=['lfw', 'cfp_ff', 'cfp_fp', 'agedb_30'], help='evluation datasets')
-    parser.add_argument('--eval_datasets', default=['lfw'], help='evluation datasets')
-    parser.add_argument('--eval_db_path', default='./datasets/faces_ms1m_112x112', help='evluate datasets base path')
-    parser.add_argument('--image_size', default=[112, 112], help='the image size')
-    parser.add_argument('--num_output', default=85164, help='the image size')
-    parser.add_argument('--tfrecords_file_path', default='./datasets/tfrecords', type=str,
-                        help='path to the output of tfrecords file path')
-    parser.add_argument('--summary_path', default='./output/summary', help='the summary file save path')
-    parser.add_argument('--ckpt_path', default='./output/ckpt', help='the ckpt file save path')
-    parser.add_argument('--log_file_path', default='./output/logs', help='the ckpt file save path')
-    parser.add_argument('--saver_maxkeep', default=100, help='tf.train.Saver max keep ckpt files')
-    parser.add_argument('--buffer_size', default=10000, help='tf dataset api buffer size')
-    parser.add_argument('--log_device_mapping', default=False, help='show device placement log')
-    parser.add_argument('--summary_interval', default=300, help='interval to save summary')
-    parser.add_argument('--ckpt_interval', default=10000, help='intervals to save ckpt file')
-    parser.add_argument('--validate_interval', default=2000, help='intervals to save ckpt file')
-    parser.add_argument('--show_info_interval', default=20, help='intervals to save ckpt file')
-    args = parser.parse_args()
-    return args
 
 
 def parse_args():
@@ -70,9 +42,9 @@ def build_model(input_shape, args):
     embedding = eval(config.net_name).get_symbol(data, config.emb_size, None, config.net_act, args.wd)
     extractor = keras.Model(inputs=data, outputs=embedding, name='extractor')
 
-    label = keras.Input(shape=(1,), name='label')
-    fc7 = block.FaceCategoryOutput(config.num_classes, loss_type=config.loss_name, s=config.loss_s, m1=config.loss_m1, m2=config.loss_m2, m3=config.loss_m3)(embedding, label)
-    classifier = keras.Model(inputs=[data, label], outputs=fc7, name='classifier')
+    label = keras.Input(shape=(1,), name='label', dtype=tf.int32)
+    fc7 = block.FaceCategoryOutput(config.num_classes, loss_type=config.loss_name, s=config.loss_s, m1=config.loss_m1, m2=config.loss_m2, m3=config.loss_m3)((embedding, label))
+    classifier = keras.Model(inputs=(data, label), outputs=fc7, name='classifier')
 
     return extractor, classifier
 
@@ -87,9 +59,9 @@ def train_net(args):
     training_path = os.path.join(data_dir, "train.tfrecords")
 
     print('Called with argument:', args, config)
-    train_dataset, batches_per_epoch = data_input.training_dataset(training_path, args.batch_size)
+    train_dataset, batches_per_epoch = data_input.training_dataset(training_path, default.per_batch_size)
 
-    extractor, classifier = build_model((image_size[0], image_size[1], args.image_channel), args)
+    extractor, classifier = build_model((image_size[0], image_size[1], 3), args)
 
     global_step = 0
     ckpt_path = os.path.join(args.models_root, '%s-%s-%s' % (args.network, args.loss, args.dataset), 'model-{step:04d}.ckpt')
@@ -118,45 +90,38 @@ def train_net(args):
     classifier.compile(optimizer=keras.optimizers.SGD(lr=args.lr, momentum=args.mom),
                        loss=keras.losses.CategoricalCrossentropy(from_logits=True),
                        metrics=[keras.metrics.SparseCategoricalAccuracy()])
+    classifier.summary()
 
     tensor_board = keras.callbacks.TensorBoard(ckpt_dir)
     tensor_board.set_model(classifier)
 
-    iterator = train_dataset.make_initializable_iterator()
-    next_element = iterator.get_next()
-    sess = tf.Session()
     train_names = ['train_loss', 'train_acc']
     train_results = []
     highest_score = 0
     for epoch in range(initial_epoch, default.end_epoch):
-        sess.run(iterator.initializer)
         for batch in range(rest_batches, batches_per_epoch+1):
-            try:
-                utils.update_learning_rate(classifier, lr_decay_steps, global_step)
-                images, labels = sess.run(next_element)
-            except tf.errors.OutOfRangeError:
-                break
-            train_results = classifier.train_on_batch([images, labels], labels, reset_metrics=False)
+            utils.update_learning_rate(classifier, lr_decay_steps, global_step)
+            train_results = classifier.train_on_batch(train_dataset, reset_metrics=False)
             global_step += 1
             if global_step % 1000 == 0:
                 print('lr-batch-epoch:', float(K.get_value(classifier.optimizer.lr)), batch, epoch)
             if global_step >= 0 and global_step % args.verbose == 0:
                 acc_list = []
-                sess = tf.Session()
                 for key in valid_datasets:
                     data_set, data_set_flip, is_same_list = valid_datasets[key]
                     embeddings = extractor.predict(data_set)
                     embeddings_flip = extractor.predict(data_set_flip)
-                    embeddings = np.concatenate([embeddings, embeddings_flip])
-
+                    embeddings_parts = [embeddings, embeddings_flip]
                     x_norm = 0.0
                     x_norm_cnt = 0
-                    for i in range(embeddings.shape[0]):
-                        embedding = embeddings[i]
-                        norm = np.linalg.norm(embedding)
-                        x_norm += norm
-                        x_norm_cnt += 1
+                    for part in embeddings_parts:
+                        for i in range(part.shape[0]):
+                            embedding = part[i]
+                            norm = np.linalg.norm(embedding)
+                            x_norm += norm
+                            x_norm_cnt += 1
                     x_norm /= x_norm_cnt
+                    embeddings = embeddings_parts[0] + embeddings_parts[1]
                     embeddings = sklearn.preprocessing.normalize(embeddings)
                     print(embeddings.shape)
                     _, _, accuracy, val, val_std, far = verification.evaluate(embeddings, is_same_list, folds=10)

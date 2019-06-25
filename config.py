@@ -110,14 +110,14 @@ dataset = edict()
 
 dataset.emore = edict()
 dataset.emore.dataset = 'emore'
-dataset.emore.dataset_path = '../datasets/faces_emore'
+dataset.emore.dataset_path = 'data/faces_emore'
 dataset.emore.num_classes = 85742
 dataset.emore.image_shape = (112, 112, 3)
 dataset.emore.val_targets = ['lfw', 'cfp_fp', 'agedb_30']
 
 dataset.retina = edict()
 dataset.retina.dataset = 'retina'
-dataset.retina.dataset_path = '../datasets/ms1m-retinaface-t1'
+dataset.retina.dataset_path = 'data/ms1m-retinaface-t1'
 dataset.retina.num_classes = 93431
 dataset.retina.image_shape = (112, 112, 3)
 dataset.retina.val_targets = ['lfw', 'cfp_fp', 'agedb_30']
@@ -177,7 +177,8 @@ default = edict()
 
 # default network
 default.network = 'y1'
-default.pretrained = './models/model-y1/model-y1'
+# default.pretrained = './models/model-y1/model-y1'
+default.pretrained = ''
 default.pretrained_epoch = 0
 # default dataset
 default.dataset = 'emore'
